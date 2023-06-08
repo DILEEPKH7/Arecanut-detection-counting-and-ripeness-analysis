@@ -1,0 +1,4 @@
+data/areca_tiling_2048/sliced\10_14_210_X_10_2_0_1.JPG
+data/areca_tiling_2048/sliced\10_14_210_X_11_2_0_1.JPG
+data/areca_tiling_2048/sliced\10_14_210_X_12_2_0_0.JPG
+data/areca_tiling_2048/sliced\10_14_210_X_1_1_0_1.JPG

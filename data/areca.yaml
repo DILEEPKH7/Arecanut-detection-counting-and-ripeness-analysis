@@ -1,0 +1,11 @@
+# an alternative to JSON or XML file, better for creating configuration files as it is relies on 
+# spacing and indentation and it is easier compared to others
+
+train: data/areca_zoomin/images/train # training set path
+val: data/areca_zoomin/images/val # validation path
+
+nc: 1 # number of classes
+
+is_coco: False
+
+names: ['Ripened']

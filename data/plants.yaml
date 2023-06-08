@@ -1,0 +1,7 @@
+train: data/plants/images/train
+val: data/plants/images/valid
+test: data/plants/images/test
+
+is_coco: False
+nc: 4
+names: ['Chard', 'Chilli', 'Coriander', 'Dill']

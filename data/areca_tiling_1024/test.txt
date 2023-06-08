@@ -1,0 +1,8 @@
+data/areca_tiling_1024/sliced\10_14_210_X_10_1_2_1.JPG
+data/areca_tiling_1024/sliced\10_14_210_X_11_2_1_3.JPG
+data/areca_tiling_1024/sliced\10_14_210_X_11_3_1_3.JPG
+data/areca_tiling_1024/sliced\10_14_210_X_11_3_2_0.JPG
+data/areca_tiling_1024/sliced\10_14_210_X_11_3_2_1.JPG
+data/areca_tiling_1024/sliced\10_14_210_X_12_1_0_2.JPG
+data/areca_tiling_1024/sliced\10_14_210_X_12_1_1_2.JPG
+data/areca_tiling_1024/sliced\10_14_210_X_12_1_2_4.JPG
