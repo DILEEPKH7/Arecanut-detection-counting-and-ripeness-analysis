@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
-
+import warnings
 
 def conv_bn(in_channels, out_channels, kernel_size, stride, padding, groups=1):
     '''Basic cell for rep-style block, including conv and bn'''
@@ -72,5 +72,134 @@ class RepVGGBlock(nn.Module):
 
         #print(self.nonlinearity(self.se(self.rbr_dense(inputs) + self.rbr_1x1(inputs) + id_out)))
         return self.nonlinearity(self.se(self.rbr_dense(inputs) + self.rbr_1x1(inputs) + id_out))
+    
+class RepBlock(nn.Module):
+    '''
+        RepBlock is a stage block with rep-style basic block
+    '''
+    def __init__(self, in_channels, out_channels, n=1, block=RepVGGBlock, basic_block=RepVGGBlock):
+        super().__init__()
+
+        self.conv1 = block(in_channels, out_channels)
+        self.block = nn.Sequential(*(block(out_channels, out_channels) for _ in range(n - 1))) if n > 1 else None
+
+    def forward(self, x):
+        x = self.conv1(x)
+        if self.block is not None:
+            x = self.block(x)
+        return x
+
+class SimCSPSPPF(nn.Module):
+    # CSP https://github.com/WongKinYiu/CrossStagePartialNetworks
+    def __init__(self, in_channels, out_channels, kernel_size=5, e=0.5):
+        super(SimCSPSPPF, self).__init__()
+        c_ = int(out_channels * e)  # hidden channels
+        self.cv1 = SimConv(in_channels, c_, 1, 1)
+        self.cv2 = SimConv(in_channels, c_, 1, 1)
+        self.cv3 = SimConv(c_, c_, 3, 1)
+        self.cv4 = SimConv(c_, c_, 1, 1)
+        
+        self.m = nn.MaxPool2d(kernel_size=kernel_size, stride=1, padding=kernel_size // 2)
+        self.cv5 = SimConv(4 * c_, c_, 1, 1)
+        self.cv6 = SimConv(c_, c_, 3, 1)
+        self.cv7 = SimConv(2 * c_, out_channels, 1, 1)
+
+    def forward(self, x):
+        x1 = self.cv4(self.cv3(self.cv1(x)))
+        y0 = self.cv2(x)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            y1 = self.m(x1)
+            y2 = self.m(y1)
+            y3 =self.cv6(self.cv5(torch.cat([x1, y1, y2, self.m(y2)], 1)))
+        return self.cv7(torch.cat((y0, y3), dim=1))
+    
+class SimConv(nn.Module):
+    '''Normal Conv with ReLU activation'''
+    def __init__(self, in_channels, out_channels, kernel_size, stride, groups=1, bias=False):
+        super().__init__()
+        padding = kernel_size // 2
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            groups=groups,
+            bias=bias,
+        )
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.act = nn.ReLU()
+
+    def forward(self, x):
+        return self.act(self.bn(self.conv(x)))
+
+    def forward_fuse(self, x):
+        return self.act(self.conv(x))
+
+class BiFusion(nn.Module):
+    '''BiFusion Block in PAN'''
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.cv1 = SimConv(in_channels[0], out_channels, 1, 1)
+        self.cv2 = SimConv(in_channels[1], out_channels, 1, 1)
+        self.cv3 = SimConv(out_channels * 3, out_channels, 1, 1)
+        
+        self.upsample = Transpose(
+            in_channels=out_channels,
+            out_channels=out_channels,
+        )
+        self.downsample = SimConv(
+            in_channels=out_channels,
+            out_channels=out_channels,
+            kernel_size=3,
+            stride=2
+        )
+
+    def forward(self, x):
+        #print(x[0].shape, x[1].shape, x[2].shape)
+        x0 = self.upsample(x[0])
+        x1 = self.cv1(x[1])
+        x2 = self.downsample(self.cv2(x[2]))
+        #print(x0.shape, x1.shape, x2.shape)
+        #print((self.cv3(torch.cat((x0, x1, x2), dim=1))).shape)
+        return self.cv3(torch.cat((x0, x1, x2), dim=1))
+    
+class Transpose(nn.Module):
+    '''Normal Transpose, default for upsampling'''
+    def __init__(self, in_channels, out_channels, kernel_size=2, stride=2):
+        super().__init__()
+        self.upsample_transpose = torch.nn.ConvTranspose2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            bias=True
+        )
+
+    def forward(self, x):
+        return self.upsample_transpose(x)
 
 
+class Conv(nn.Module):
+    '''Normal Conv with SiLU activation'''
+    def __init__(self, in_channels, out_channels, kernel_size, stride, groups=1, bias=False):
+        super().__init__()
+        padding = kernel_size // 2
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            groups=groups,
+            bias=bias,
+        )
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        return self.act(self.bn(self.conv(x)))
+
+    def forward_fuse(self, x):
+        return self.act(self.conv(x))
