@@ -203,3 +203,9 @@ class Conv(nn.Module):
 
     def forward_fuse(self, x):
         return self.act(self.conv(x))
+
+def get_block(mode):
+    if mode == 'repvgg':
+        return RepVGGBlock
+    else:
+        raise NotImplementedError("Undefied Repblock choice for mode {}".format(mode))
