@@ -11,7 +11,7 @@ import random
 import json
 import time
 import hashlib
-
+import matplotlib.pyplot as plt
 
 from pathlib import Path
 from io import UnsupportedOperation
@@ -20,7 +20,7 @@ from PIL import ExifTags, Image, ImageOps
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from events import LOGGER
+from yolov6.utils.events import LOGGER
 
 # parameters
 IMG_FORMATS = ["bmp", "jpg", "jpeg", "png", "tif", "tiff", "dng", "webp", "mpo"]
@@ -58,15 +58,17 @@ class TrainValDataset(Dataset):
         pad=0.0, # check 
         rank=-1,
         data_dict=None,
-        task="train"
+        task="train",
+        exp_dir='.'
     ):
         assert task.lower() in ("train", "val", "test", "speed"), f'Not supported task: {task}'
         t1 = time.time()
         self.__dict__.update(locals()) # better way of assining input values to self instead of assigning each individual to self
         self.main_process = self.rank in (-1,0) # self.main_process == True if self.rank in (-1,0) else False
         self.task = self.task.capitalize()
-        #self.class_names = data_dict["names"]
+        self.class_names = data_dict["names"]
         self.img_paths, self.labels = self.get_imgs_labels(self.img_dir)
+        self.exp_dir = exp_dir
         t2 = time.time()
         if self.main_process:
             LOGGER.info(f"%.1fs for dataset initialization." % (t2 - t1))
@@ -121,8 +123,8 @@ class TrainValDataset(Dataset):
             boxes[:, 3] = (labels[:, 4] - labels[:, 2]) / h  # height
             labels[:, 1:] = boxes
 
-        if self.augment:
-            img, labels = self.general_augment(img, labels)
+        # if self.augment:
+        #     img, labels = self.general_augment(img, labels)
 
         labels_out = torch.zeros((len(labels), 6))
         if len(labels):
@@ -324,6 +326,22 @@ class TrainValDataset(Dataset):
         LOGGER.info(
             f"{self.task}: Final numbers of valid images: {len(img_paths)}/ labels: {len(labels)}. "
         )
+        # bounding box distribution
+        bbox_all=[]
+        for img_labels in labels:
+            for label in img_labels:
+                bbox_all.append(label)
+        bbox_counts = len(bbox_all)
+        widths_all = []
+        heights_all = []
+        for bbox in bbox_all:
+            _,_,_,width,height=bbox
+            widths_all.append(width)
+            heights_all.append(height)
+
+        widths_all = [width * self.img_size for width in widths_all]
+        heights_all = [height * self.img_size for height in heights_all]
+        plot_bounding_box_distribution(widths_all, heights_all, save_dir=Path(self.exp_dir) / f'pre_bounding_box_distribution{self.task}.png',title=(f'Bounding Box Size Distribution - {bbox_counts}'))
         return img_paths, labels
 
     @staticmethod
@@ -500,6 +518,85 @@ def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleu
     else:
         return im, r, (left, top)
         
+class LoadData:
+    def __init__(self, path, webcam, webcam_addr):
+        self.webcam = webcam
+        self.webcam_addr = webcam_addr
+        if webcam: # if use web camera
+            imgp = []
+            vidp = [int(webcam_addr) if webcam_addr.isdigit() else webcam_addr]
+        else:
+            p = str(Path(path).resolve())  # os-agnostic absolute path
+            if os.path.isdir(p):
+                files = sorted(glob.glob(os.path.join(p, '**/*.*'), recursive=True))  # dir
+            elif os.path.isfile(p):
+                files = [p]  # files
+            else:
+                raise FileNotFoundError(f'Invalid path {p}')
+            imgp = [i for i in files if i.split('.')[-1] in IMG_FORMATS]
+            # vidp = [v for v in files if v.split('.')[-1] in VID_FORMATS]
+        self.files = imgp # + vidp
+        self.nf = len(self.files)
+        self.type = 'image'
+        # if len(vidp) > 0:
+        #     self.add_video(vidp[0])  # new video
+        # else:
+        #     self.cap = None
+        self.cap = None
+
+    # @staticmethod
+    def checkext(self, path):
+        if self.webcam:
+            file_type = 'video'
+        else:
+            file_type = 'image' if path.split('.')[-1].lower() in IMG_FORMATS else 'video'
+        return file_type
+
+    def __iter__(self):
+        self.count = 0
+        return self
+
+    def __next__(self):
+        if self.count == self.nf:
+            raise StopIteration
+        path = self.files[self.count]
+        if self.checkext(path) == 'video':
+            self.type = 'video'
+            ret_val, img = self.cap.read()
+            while not ret_val:
+                self.count += 1
+                self.cap.release()
+                if self.count == self.nf:  # last video
+                    raise StopIteration
+                path = self.files[self.count]
+                self.add_video(path)
+                ret_val, img = self.cap.read()
+        else:
+            # Read image
+            self.count += 1
+            img = cv2.imread(path)  # BGR
+        return img, path, self.cap
+        
+    def add_video(self, path):
+        self.frame = 0
+        self.cap = cv2.VideoCapture(path)
+        self.frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+    def __len__(self):
+        return self.nf  # number of files
+
+
+def plot_bounding_box_distribution(widths, heights, save_dir='bounding_box_distribution.png',title=None):
+    # Bounding box distribution
+    fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
+    ax.hist(widths, bins=50, alpha=0.5, color='b', label='Width')
+    ax.hist(heights, bins=50, alpha=0.5, color='r', label='Height')
+    ax.set_xlabel('Size')
+    ax.set_ylabel('Frequency')
+    ax.set_title(title)
+    ax.legend()
+    fig.savefig(Path(save_dir), dpi=250)
+
 # if __name__ == '__main__':
 #     a = TrainValDataset(        
 #         img_dir='data/areca_100/images/train',

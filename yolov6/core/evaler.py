@@ -21,7 +21,6 @@ from yolov6.utils.torch_utils import time_sync, get_model_info
 python tools/eval.py --task 'train'/'val'/'speed'
 '''
 
-
 class Evaler:
     def __init__(self,
                  data,
@@ -41,7 +40,7 @@ class Evaler:
                  do_coco_metric=True,
                  do_pr_metric=False,
                  plot_curve=True,
-                 plot_confusion_matrix=False
+                 plot_confusion_matrix=True
                  ):
         assert do_pr_metric or do_coco_metric, 'ERROR: at least set one val metric'
         self.data = data
@@ -128,12 +127,13 @@ class Evaler:
 
             # Inference
             t2 = time_sync()
-            outputs, _ = model(imgs) # 4,4851,85
+            outputs, _ = model(imgs) # 4,8400,85 - meaning 8400 predictions per image
             self.speed_result[2] += time_sync() - t2  # inference time
 
             # post-process
             t3 = time_sync()
             outputs = non_max_suppression(outputs, self.conf_thres, self.iou_thres, multi_label=True)
+            # Now, each image has different predictions and definitely less than 8400
             self.speed_result[3] += time_sync() - t3  # post-process time
             self.speed_result[0] += len(outputs)
 
@@ -157,9 +157,9 @@ class Evaler:
             # This code is based on
             # https://github.com/ultralytics/yolov5/blob/master/val.py
             for si, pred in enumerate(eval_outputs):
-                labels = targets[targets[:, 0] == si, 1:]
+                labels = targets[targets[:, 0] == si, 1:] # ground truth labels
                 nl = len(labels)
-                tcls = labels[:, 0].tolist() if nl else []  # target class
+                tcls = labels[:, 0].tolist() if nl else []  # target class / ground truth class
                 seen += 1
 
                 if len(pred) == 0:
@@ -193,7 +193,7 @@ class Evaler:
                         confusion_matrix.process_batch(predn, labelsn)
 
                 # Append statistics (correct, conf, pcls, tcls)
-                stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+                stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls)) # stats has confidence, predicted label, ground label 
 
         if self.do_pr_metric:
             # Compute statistics
@@ -202,14 +202,22 @@ class Evaler:
 
                 from yolov6.utils.metrics import ap_per_class
                 p, r, ap, f1, ap_class = ap_per_class(*stats, plot=self.plot_curve, save_dir=self.save_dir, names=model.names)
+                # precision, recall, and average precision at different IOU thresholds for each class.
+                a = f1.mean(0)
+                b=len(a)
+                c=a[::-1]
+                d=c.argmax()
                 AP50_F1_max_idx = len(f1.mean(0)) - f1.mean(0)[::-1].argmax() -1
                 LOGGER.info(f"IOU 50 best mF1 thershold near {AP50_F1_max_idx/1000.0}.")
+                e=ap.mean(1)
+                f=ap[:,0]
                 ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
                 mp, mr, map50, map = p[:, AP50_F1_max_idx].mean(), r[:, AP50_F1_max_idx].mean(), ap50.mean(), ap.mean()
                 nt = np.bincount(stats[3].astype(np.int64), minlength=model.nc)  # number of targets per class
 
                 # Print results
                 s = ('%-16s' + '%12s' * 7) % ('Class', 'Images', 'Labels', 'P@.5iou', 'R@.5iou', 'F1@.5iou', 'mAP@.5', 'mAP@.5:.95')
+                # P@0.5iou represents the mean precision at the threshold corresponding to the maximum F1 score and IOU 0.5.
                 LOGGER.info(s)
                 pf = '%-16s' + '%12i' * 2 + '%12.3g' * 5  # print format
                 LOGGER.info(pf % ('all', seen, nt.sum(), mp, mr, f1.mean(0)[AP50_F1_max_idx], map50, map))
@@ -224,14 +232,13 @@ class Evaler:
 
                 if self.plot_confusion_matrix:
                     confusion_matrix.plot(save_dir=self.save_dir, names=list(model.names))
-                    confusion_matrix_results = confusion_matrix.tp_fp()
+                    confusion_matrix_results = confusion_matrix.tp_fp(save_dir=self.save_dir)
                     
             else:
                 LOGGER.info("Calculate metric failed, might check dataset.")
                 self.pr_metric_result = (0.0, 0.0)
 
         return pred_results, vis_outputs, vis_paths
-
 
     def eval_model(self, pred_results, model, dataloader, task):
         '''Evaluate models

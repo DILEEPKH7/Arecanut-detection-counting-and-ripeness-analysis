@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import warnings
 from . import general
+from yolov6.utils.events import LOGGER
 
 def ap_per_class(tp, conf, pred_cls, target_cls, plot=True, save_dir='.', names=()):
     """ Compute the average precision, given the recall and precision curves.
@@ -25,8 +26,8 @@ def ap_per_class(tp, conf, pred_cls, target_cls, plot=True, save_dir='.', names=
     """
 
     # Sort by objectness
-    i = np.argsort(-conf)
-    tp, conf, pred_cls = tp[i], conf[i], pred_cls[i]
+    i = np.argsort(-conf) # indices in the descending order
+    tp, conf, pred_cls = tp[i], conf[i], pred_cls[i] 
 
     # Find unique classes
     unique_classes = np.unique(target_cls)
@@ -35,7 +36,7 @@ def ap_per_class(tp, conf, pred_cls, target_cls, plot=True, save_dir='.', names=
     # Create Precision-Recall curve and compute AP for each class
     px, py = np.linspace(0, 1, 1000), []  # for plotting
     ap, p, r = np.zeros((nc, tp.shape[1])), np.zeros((nc, 1000)), np.zeros((nc, 1000))
-    for ci, c in enumerate(unique_classes):
+    for ci, c in enumerate(unique_classes): # precision, recall, and average precision at different IOU thresholds for each class.
         i = pred_cls == c
         n_l = (target_cls == c).sum()  # number of labels
         n_p = i.sum()  # number of predictions
@@ -43,13 +44,15 @@ def ap_per_class(tp, conf, pred_cls, target_cls, plot=True, save_dir='.', names=
         if n_p == 0 or n_l == 0:
             continue
         else:
-            # Accumulate FPs and TPs
+            # Accumulate FPs and TPs for each class at different IOU thresholds
             fpc = (1 - tp[i]).cumsum(0)
             tpc = tp[i].cumsum(0)
 
             # Recall
             recall = tpc / (n_l + 1e-16)  # recall curve
-            r[ci] = np.interp(-px, -conf[i], recall[:, 0], left=0)  # negative x, xp because xp decreases
+            a=recall[:,0] # select 0.5 mAP
+            b=conf[i]
+            r[ci] = np.interp(-px, -conf[i], recall[:, 0], left=0)  # negative x, xp because xp decreases 
 
             # Precision
             precision = tpc / (tpc + fpc)  # precision curve
@@ -217,13 +220,33 @@ class ConfusionMatrix:
     def matrix(self):
         return self.matrix
 
-    def tp_fp(self):
-        tp = (self.matrix.diagonal()).sum()  # true positives
-        fp = (self.matrix.sum(1) - self.matrix.diagonal()).sum()  # false positives
-        fn = (self.matrix.sum(0) - self.matrix.diagonal()).sum()  # false negatives (missed detections)
+    def tp_fp(self, save_dir='.'):
+        tp = self.matrix.diagonal()  # true positives
+        fp = (self.matrix.sum(axis=0) - tp)  # false positives
+        fn = (self.matrix.sum(axis=1) - tp)  # false negatives (missed detections)
         total_detections = self.matrix.sum().sum()
-        return tp[:-1], fp[:-1], fn, total_detections # remove background class
+        LOGGER.info(f'True positives: {tp.sum()}, false positives: {fp.sum()}, false negatives: {fn.sum()}, total detections: {total_detections}')
 
+        # Plot the matrix
+        fig, ax = plt.subplots(figsize=(12, 9), tight_layout=True)
+        im = ax.imshow(self.matrix, cmap='gray')
+
+        # Add text annotations
+        for i in range(self.matrix.shape[0]):
+            for j in range(self.matrix.shape[1]):
+                if self.matrix[i,j] !=0:
+                    text = ax.text(j, i, int(self.matrix[i, j]), ha='center', va='center', color='r')
+
+        # Add colorbar
+        cbar = fig.colorbar(im)
+
+        # Save the image
+        save_path = Path(save_dir) / 'matrix_image.png'
+        fig.savefig(save_path, dpi=250)
+        # plt.show()
+
+        return tp, fp, fn, total_detections
+    
     def plot(self, normalize=True, save_dir='', names=()):
         try:
             import seaborn as sn

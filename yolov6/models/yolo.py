@@ -10,7 +10,7 @@ from yolov6.models.efficientrep import *
 from yolov6.models.reppan import *
 from yolov6.utils.events import LOGGER
 
-from yolov6.models.effidehead_fuseab import Detect, build_effidehead_layer
+from yolov6.models.heads.effidehead_fuseab import Detect, build_effidehead_layer
 
 class Model(nn.Module):
     '''YOLOv6 model with backbone, neck and head.

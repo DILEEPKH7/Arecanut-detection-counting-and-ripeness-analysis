@@ -225,7 +225,7 @@ class Trainer:
                             do_coco_metric=get_cfg_value(self.cfg.eval_params, "do_coco_metric", True),
                             do_pr_metric=get_cfg_value(self.cfg.eval_params, "do_pr_metric", False),
                             plot_curve=get_cfg_value(self.cfg.eval_params, "plot_curve", False),
-                            plot_confusion_matrix=get_cfg_value(self.cfg.eval_params, "plot_confusion_matrix", False),
+                            plot_confusion_matrix=get_cfg_value(self.cfg.eval_params, "plot_confusion_matrix", True),
                             )
             
 
@@ -371,6 +371,58 @@ class Trainer:
             self.plot_train_batch(images, targets)
             write_tbimg(self.tblogger, self.vis_train_batch, self.step + self.max_stepnum * self.epoch, type='train')
 
+        # forward
+        with amp.autocast(enabled=self.device != 'cpu'):
+            preds, s_featmaps = self.model(images)
+            torch.save(preds,'preds.pth')
+            torch.save(s_featmaps,'s_featmaps.pth')
+            #print(type(preds))
+            #print(preds[0])
+            # if self.args.distill:
+            #     with torch.no_grad():
+            #         t_preds, t_featmaps = self.teacher_model(images)
+            #     temperature = self.args.temperature   
+            #     total_loss, loss_items = self.compute_loss_distill(preds, t_preds, s_featmaps, t_featmaps, targets, \
+            #                                                     epoch_num, self.max_epoch, temperature, step_num)
+            
+            if self.args.fuse_ab:       
+                total_loss, loss_items = self.compute_loss((preds[0],preds[3],preds[4]), targets, epoch_num, step_num) # YOLOv6_af
+                total_loss_ab, loss_items_ab = self.compute_loss_ab(preds[:3], targets, epoch_num, step_num) # YOLOv6_ab
+                total_loss += total_loss_ab
+                loss_items += loss_items_ab
+            else:
+                total_loss, loss_items = self.compute_loss(preds, targets, epoch_num, step_num) # YOLOv6_af
+            if self.rank != -1:
+                total_loss *= self.world_size
+        # backward
+        self.scaler.scale(total_loss).backward()
+        self.loss_items = loss_items
+        self.update_optimizer()
+
+    def update_optimizer(self):
+        curr_step = self.step + self.max_stepnum * self.epoch
+        self.accumulate = max(1, round(64 / self.batch_size))
+        if curr_step <= self.warmup_stepnum:
+            self.accumulate = max(1, np.interp(curr_step, [0, self.warmup_stepnum], [1, 64 / self.batch_size]).round())
+            for k, param in enumerate(self.optimizer.param_groups):
+                warmup_bias_lr = self.cfg.solver.warmup_bias_lr if k == 2 else 0.0
+                param['lr'] = np.interp(curr_step, [0, self.warmup_stepnum], [warmup_bias_lr, param['initial_lr'] * self.lf(self.epoch)])
+                if 'momentum' in param:
+                    param['momentum'] = np.interp(curr_step, [0, self.warmup_stepnum], [self.cfg.solver.warmup_momentum, self.cfg.solver.momentum])
+        if curr_step - self.last_opt_step >= self.accumulate:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.optimizer.zero_grad()
+            if self.ema:
+                self.ema.update(self.model)
+            self.last_opt_step = curr_step
+
+    @staticmethod
+    def prepro_data(batch_data, device):
+        images = batch_data[0].to(device, non_blocking=True).float() / 255
+        targets = batch_data[1].to(device)
+        return images, targets
+
     # Print loss after each steps
     def print_details(self):
         if self.main_process:
@@ -386,23 +438,24 @@ class Trainer:
         class_names = data_dict['names']
         assert len(class_names) == nc, f'the length of class names does not match the number of classes defined'
         grid_size = max(int(max(cfg.model.head.strides)), 32)
+        exp_dir = args.save_dir
         # create train dataloader
         train_loader = create_dataloader(train_path, args.img_size, args.batch_size // args.world_size, grid_size,
                                          hyp=dict(cfg.data_aug), augment=True, rect=False, rank=args.local_rank,
                                          workers=args.workers, shuffle=True, check_images=args.check_images,
-                                         check_labels=args.check_labels, data_dict=data_dict, task='train')[0]
+                                         check_labels=args.check_labels, data_dict=data_dict, task='train',exp_dir=exp_dir)[0]
         # create val dataloader
         val_loader = None
         if args.rank in [-1, 0]:
             val_loader = create_dataloader(val_path, args.img_size, args.batch_size // args.world_size * 2, grid_size,
                                            hyp=dict(cfg.data_aug), rect=True, rank=-1, pad=0.5,
                                            workers=args.workers, check_images=args.check_images,
-                                           check_labels=args.check_labels, data_dict=data_dict, task='val')[0]
+                                           check_labels=args.check_labels, data_dict=data_dict, task='val',exp_dir=exp_dir)[0]
 
         return train_loader, val_loader
 
     def get_model(self, args, cfg, nc, device):
-        model = build_model(cfg, nc, device, fuse_ab=self.args.fuse_ab, distill_ns=self.distill_ns)
+        model = build_model(cfg, nc, device, fuse_ab=self.args.fuse_ab)
         weights = cfg.model.pretrained
         if weights:  # finetune if pretrained model is set
             LOGGER.info(f'Loading state_dict from {weights} for fine-tuning...')

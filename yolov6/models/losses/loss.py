@@ -66,7 +66,7 @@ class ComputeLoss:
         # print(anchor_points.cpu().numpy())
         # print(n_anchors_list[0].cpu().numpy())
         # print(stride_tensor.cpu().numpy())
-        print(targets.cpu().numpy())
+        #print(targets.cpu().numpy())
         assert pred_scores.type() == pred_distri.type()
         gt_bboxes_scale = torch.full((1,4), self.ori_img_size).type_as(pred_scores)
         batch_size = pred_scores.shape[0]
